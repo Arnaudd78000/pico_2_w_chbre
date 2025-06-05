@@ -47,11 +47,17 @@ def safe_print(*args, **kwargs):
 #############################################################
 # ### Fonction pour envoyer les donnees à SdB ###
 ############h#################################################
-def send_to_SdB(temp, temp_cible, relais_state, mode, elapsed_time_regul_seconds, defaut):
-    if relais_state==1:
-        modetx=mode+"_1"
+def send_to_SdB(temp, temp_cible, relais_state, mode, elapsed_time_regul_seconds, defaut, new_ordre):
+    if mode=="off":
+        if new_ordre==True:
+            modetx="off_2" 
+        else:
+            modetx="off_0"              
     else:
-        modetx=mode+"_0" 
+        if relais_state==1:
+            modetx=mode+"_1"
+        else:
+            modetx=mode+"_0" 
     # Donnees à envoyer
     #cde_regul_court=0 if cde_regul==False else 1
     data = f"{temp:.1f},{temp_cible:.1f},{modetx},{int(defaut)},{int(elapsed_time_regul_seconds/60)}"
@@ -396,7 +402,7 @@ try:
             #     led_verte.value(0)
             if gl_mode_old!=gl_mode:
                 gl_mode_old = gl_mode
-            send_to_SdB(temp, temp_cible, relais.value(), gl_mode, elapsed_time_regul_seconds, gl_defaut)
+            send_to_SdB(temp, temp_cible, relais.value(), gl_mode, elapsed_time_regul_seconds, gl_defaut, new_ordre)
 
 except Exception as e:
     safe_print("❌ Exception dans la boucle principale:", e)
