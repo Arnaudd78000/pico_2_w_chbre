@@ -43,14 +43,20 @@ def safe_print(*args, **kwargs):
     except Exception as e:
         pass  # Ignore les erreurs de sortie
 
-
+global modetx
+modetx="dummy"
 #############################################################
 # ### Fonction pour envoyer les donnees à SdB ###
 ############h#################################################
 def send_to_SdB(temp, temp_cible, relais_state, mode, elapsed_time_regul_seconds, defaut, new_ordre):
+    global modetx
+
     if mode=="off":
         if new_ordre==True:
-            modetx="off_2" 
+            if modetx=="off_2":
+                modetx="off_0"
+            else:
+                modetx="off_2" 
         else:
             modetx="off_0"              
     else:
