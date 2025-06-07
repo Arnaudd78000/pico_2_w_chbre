@@ -22,7 +22,7 @@ SERVICE_UUID = bluetooth.UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
 RX_UUID = bluetooth.UUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
 TX_UUID = bluetooth.UUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
 
-global gl_mode, gl_mode_old, gl_cde_regul, gl_reception_trame, gl_temp_pre_chauff, gl_temp_chauff, gl_ordre_pre_chauff, gl_ordre_chauff, gl_presence, gl_mode_debug, gl_current_hour, gl_current_minute, gl_defaut, gl_new_ordre_old
+global gl_mode, gl_mode_old, gl_cde_regul, gl_reception_trame, gl_temp_pre_chauff, gl_temp_chauff, gl_ordre_pre_chauff, gl_ordre_chauff, gl_presence, gl_mode_debug, gl_current_hour, gl_current_minute, gl_defaut, gl_dem_chauffage_old
 
 # Initialisation de la liste des températures
 temperature_history = [20] # init une donnée
@@ -48,11 +48,13 @@ modetx="dummy"
 #############################################################
 # ### Fonction pour envoyer les donnees à SdB ###
 ############h#################################################
-def send_to_SdB(temp, temp_cible, relais_state, mode, elapsed_time_regul_seconds, defaut, new_ordre):
+def send_to_SdB(temp, temp_cible, relais_state, mode, elapsed_time_regul_seconds, defaut, dem_chauffage):
     global modetx
 
     if mode=="off":
-        if new_ordre==True:
+        # verif si la demande a ete refusee
+        if dem_chauffage==True:
+            # faire un chgmnt sur valeur de mode pour faire basculer les ihm de on/boost à off
             if modetx=="off_2":
                 modetx="off_0"
             else:
@@ -69,8 +71,8 @@ def send_to_SdB(temp, temp_cible, relais_state, mode, elapsed_time_regul_seconds
     data = f"{temp:.1f},{temp_cible:.1f},{modetx},{int(defaut)},{int(elapsed_time_regul_seconds/60)}"
     # defaut en valeur int (et non hex) :
     # il faut passer par un mode off->pre_chauff ou chauff pour effacer gl_defaut
-        # bit 0: timeout rx
-        # bit 1: elapsed time regul
+        # bit 0: elapsed time regul
+        # bit 1: timeout rx
         # bit 2:
         # bit 3:
         # bit 4:
@@ -259,7 +261,7 @@ gl_current_minute = 0
 #msg_recu = "null"
 gl_reception_trame = False
 gl_defaut = 0
-gl_new_ordre_old=False
+gl_dem_chauffage_old=False
 
 # ### Configuration du capteur de temperature ###
 ds_pin = machine.Pin(0)  # GP0
@@ -334,6 +336,7 @@ try:
                 gl_mode="off"
                 relais.value(0)
                 gl_cde_regul=False
+                gl_defaut|=0x01
                 safe_print(f"{gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
             else:
                 if temp <= (temp_cible-0.5):
@@ -357,10 +360,10 @@ try:
             # safe_print(f"gl_presence:{gl_presence}")
             # safe_print(f"gl_ordre_chauff:{gl_ordre_chauff}")
             
-            new_ordre=(gl_ordre_pre_chauff or gl_ordre_chauff)
-            if (new_ordre) and (gl_new_ordre_old==False):
+            dem_chauffage=(gl_ordre_pre_chauff or gl_ordre_chauff)
+            if (dem_chauffage) and (gl_dem_chauffage_old==False):
                 gl_defaut=0
-            gl_new_ordre_old=new_ordre
+            gl_dem_chauffage_old=dem_chauffage
             
             if(gl_presence==True)and(gl_defaut==0):
                 if (gl_ordre_pre_chauff==True) and (gl_mode!="pre_chauff") and (gl_current_hour >= 20) and (gl_temp_pre_chauff<=19):
@@ -386,7 +389,7 @@ try:
                     gl_mode="off"
                     relais.value(0)
                     gl_cde_regul=False
-                    safe_print(f"{gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
+                    safe_print(f"{gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()} ")
                 elif (gl_mode=="pre_chauff") and (temp_cible!=gl_temp_pre_chauff):
                     temp_cible=gl_temp_pre_chauff
                 elif (gl_mode=="chauff") and (temp_cible!=gl_temp_chauff):
@@ -408,7 +411,7 @@ try:
             #     led_verte.value(0)
             if gl_mode_old!=gl_mode:
                 gl_mode_old = gl_mode
-            send_to_SdB(temp, temp_cible, relais.value(), gl_mode, elapsed_time_regul_seconds, gl_defaut, new_ordre)
+            send_to_SdB(temp, temp_cible, relais.value(), gl_mode, elapsed_time_regul_seconds, gl_defaut, dem_chauffage)
 
 except Exception as e:
     safe_print("❌ Exception dans la boucle principale:", e)
