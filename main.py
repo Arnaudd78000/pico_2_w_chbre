@@ -15,14 +15,16 @@ import select
 
 # ### Constante ###
 DEBUG = False
-VERSION = "1.0a"
+VERSION = "1.2"
 
 # UUIDs BLE UART
 SERVICE_UUID = bluetooth.UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
 RX_UUID = bluetooth.UUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
 TX_UUID = bluetooth.UUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
 
-global gl_mode, gl_mode_old, gl_cde_regul, gl_reception_trame, gl_temp_pre_chauff, gl_temp_chauff, gl_ordre_pre_chauff, gl_ordre_chauff, gl_presence, gl_mode_debug, gl_current_hour, gl_current_minute, gl_defaut, gl_dem_chauffage_old
+global gl_mode, gl_mode_old, gl_cde_regul, gl_reception_trame, gl_temp_pre_chauff, gl_temp_chauff, gl_ordre_pre_chauff, gl_ordre_chauff, gl_presence, gl_mode_debug, gl_current_hour, gl_current_minute, gl_defaut, gl_dem_chauffage_old, gl_duree, gl_ma_duree
+gl_duree=0
+gl_ma_duree=0
 
 # Initialisation de la liste des températures
 temperature_history = [20] # init une donnée
@@ -34,7 +36,7 @@ def mean(values):
 #############################################################
 # ### /!\ !!! /!\ !!!/!\ !!!/!\ !!!/!\ !!!/!\ !!!/!\ !!!/!\ !!!
 # ### /!\ !!! lorsque l'on connecte la sonde usb,
-# ### /!\ !!! ca finaera par crasher après la déconnecion
+# ### /!\ !!! ca finaera par crasher après la déconnexion
 # ### /!\ !!! /!\ !!!/!\ !!!/!\ !!!/!\ !!!/!\ !!!/!\ !!!/!\ !!!
 ############h#################################################
 def safe_print(*args, **kwargs):
@@ -48,7 +50,7 @@ modetx="dummy"
 #############################################################
 # ### Fonction pour envoyer les donnees à SdB ###
 ############h#################################################
-def send_to_SdB(temp, temp_cible, relais_state, mode, elapsed_time_regul_seconds, defaut, dem_chauffage):
+def send_to_SdB(temp, temp_cible, relais_state, mode, elapsed_time_regul_seconds, duree, dem_chauffage):
     global modetx
 
     if mode=="off":
@@ -68,7 +70,7 @@ def send_to_SdB(temp, temp_cible, relais_state, mode, elapsed_time_regul_seconds
             modetx=mode+"_0" 
     # Donnees à envoyer
     #cde_regul_court=0 if cde_regul==False else 1
-    data = f"{temp:.1f},{temp_cible:.1f},{modetx},{int(defaut)},{int(elapsed_time_regul_seconds/60)}"
+    data = f"{temp:.1f},{temp_cible:.1f},{modetx},{duree},{int(elapsed_time_regul_seconds/60)}"
     # defaut en valeur int (et non hex) :
     # il faut passer par un mode off->pre_chauff ou chauff pour effacer gl_defaut
         # bit 0: elapsed time regul
@@ -97,12 +99,12 @@ def to_bool(val):
 # ### Fonction pour analyser et affecter les valeurs des paramètres HTTP ###
 #############################################################
 def decode_rx_msg(message):
-    global gl_reception_trame, gl_temp_pre_chauff, gl_temp_chauff, gl_mode_debug, gl_ordre_pre_chauff, gl_ordre_chauff, gl_presence, gl_current_hour, gl_current_minute
+    global gl_reception_trame, gl_temp_pre_chauff, gl_temp_chauff, gl_mode_debug, gl_ordre_pre_chauff, gl_ordre_chauff, gl_presence, gl_current_hour, gl_current_minute, gl_duree
 
     try:
         # Décomposer la string pour obtenir les valeurs
         valeurs = message.split(',')
-        if len(valeurs) != 8:
+        if len(valeurs) != 9:
             safe_print("⚠️ Message mal formé:", message)
             return
         # Assigner les valeurs aux variables
@@ -112,9 +114,11 @@ def decode_rx_msg(message):
         gl_mode_debug = to_bool(valeurs[3])
         gl_ordre_pre_chauff = to_bool(valeurs[4])
         gl_ordre_chauff = to_bool(valeurs[5])
-        gl_current_hour = int(valeurs[6])
-        gl_current_minute = int(valeurs[7])
+        gl_duree = int(valeurs[6])        
+        gl_current_hour = int(valeurs[7])
+        gl_current_minute = int(valeurs[8])
 
+        safe_print(" Message hhh:", message)
         gl_reception_trame=True
     except Exception as e:
         safe_print("⚠️ Erreur dans decode_rx_msg:", e)
@@ -220,13 +224,18 @@ class BLEServer:
 
 
 
-    def check_timeout(self, timeout_s=1440): #time out en seconde. 1440s=24min
+    def check_timeout(self, timeout_disconnect=1440, timeout_reset=14400):
         global gl_defaut
 
         if self.connected:
             elapsed = time.time() - self.last_msg_time
-            if elapsed > timeout_s:
-                safe_print("⏱️ Aucun message depuis {} secondes. Deconnexion...".format(timeout_s))
+
+            if elapsed > timeout_reset:
+                safe_print("⏱️ Aucun message depuis {} secondes. Redémarrage du système...".format(timeout_reset))
+                machine.reset()
+
+            elif elapsed > timeout_disconnect:
+                safe_print("⏱️ Aucun message depuis {} secondes. Deconnexion BLE...".format(timeout_disconnect))
                 try:
                     self.ble.gap_disconnect(self.conn_handle)
                 except:
@@ -285,7 +294,7 @@ last_temp_time = time.ticks_ms()
 #############################################################
 try:
     while True:
-        ble_server.check_timeout(1440) # timer en secndes. pas de réception trame depuis plus de > xx minutes
+        ble_server.check_timeout(timeout_disconnect=1440, timeout_reset=14400)  # 24 min / 4 hours # timer en secndes. pas de réception trame depuis plus de > xx minutes
         #time.sleep(10)
         
         # # ### Lecture du capteur de temperature ###
@@ -337,7 +346,7 @@ try:
                 relais.value(0)
                 gl_cde_regul=False
                 gl_defaut|=0x01
-                safe_print(f"{gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
+                safe_print(f"Fin: {gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
             else:
                 if temp <= (temp_cible-0.5):
                     relais.value(1)
@@ -366,25 +375,35 @@ try:
             gl_dem_chauffage_old=dem_chauffage
             
             if(gl_presence==True)and(gl_defaut==0):
-                if (gl_ordre_pre_chauff==True) and (gl_mode!="pre_chauff") and (gl_current_hour >= 20) and (gl_temp_pre_chauff<=19):
-                    temp_cible=gl_temp_pre_chauff
-                    gl_mode="pre_chauff"
-                    gl_cde_regul=True
-                    start_regul_ticks = time.ticks_ms()
-                    max_timer_regul_seconds=2*3600
-                    if(temp<(gl_temp_pre_chauff+0.5)):
-                        relais.value(1)
-                    safe_print(f"{gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
-                elif (gl_ordre_chauff==True) and (gl_mode!="chauff") and (gl_temp_chauff<=20) : 
-                    if( (gl_mode_debug==True) or (gl_current_hour >= 19) or (gl_current_hour <=3) ):# debug
-                        temp_cible=gl_temp_chauff
-                        gl_mode="chauff"
+                if (gl_ordre_pre_chauff==True) and (gl_current_hour >= 20) and (gl_temp_pre_chauff<=19):
+                    if (gl_mode!="pre_chauff"):
+                        temp_cible=gl_temp_pre_chauff
+                        gl_mode="pre_chauff"
                         gl_cde_regul=True
                         start_regul_ticks = time.ticks_ms()
-                        max_timer_regul_seconds=45*60
-                        if(temp<(gl_temp_chauff+0.5)):
+                        max_timer_regul_seconds=min(2*3600, (1+gl_duree)*3600)  # duree max de 2h
+                        gl_ma_duree = gl_duree
+                        if(temp<(gl_temp_pre_chauff+0.5)):
                             relais.value(1)
                         safe_print(f"{gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
+                    elif gl_duree!=gl_ma_duree:
+                        max_timer_regul_seconds=min(2*3600, (1+gl_duree )*3600)  # duree max de 2h
+                        gl_ma_duree = gl_duree
+                elif (gl_ordre_chauff==True) and (gl_temp_chauff<=20) : 
+                    if( (gl_mode_debug==True) or (gl_current_hour >= 19) or (gl_current_hour <=3) ):# debug
+                        if (gl_mode!="chauff") :
+                            temp_cible=gl_temp_chauff
+                            gl_mode="chauff"
+                            gl_cde_regul=True
+                            start_regul_ticks = time.ticks_ms()
+                            max_timer_regul_seconds=min(60*30, (1+gl_duree)*60*15)  # duree max de 30min
+                            gl_ma_duree = gl_duree                        
+                            if(temp<(gl_temp_chauff+0.5)):
+                                relais.value(1)
+                            safe_print(f"{gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
+                        elif gl_duree!=gl_ma_duree:
+                            max_timer_regul_seconds=min(60*30, (1+gl_duree)*60*15)  # duree max de 30min
+                            gl_ma_duree = gl_duree  
                 elif (gl_ordre_pre_chauff==False) and (gl_ordre_chauff==False) and (gl_mode!="off") :
                     gl_mode="off"
                     relais.value(0)
@@ -411,7 +430,7 @@ try:
             #     led_verte.value(0)
             if gl_mode_old!=gl_mode:
                 gl_mode_old = gl_mode
-            send_to_SdB(temp, temp_cible, relais.value(), gl_mode, elapsed_time_regul_seconds, gl_defaut, dem_chauffage)
+            send_to_SdB(temp, temp_cible, relais.value(), gl_mode, elapsed_time_regul_seconds, gl_ma_duree, dem_chauffage)
 
 except Exception as e:
     safe_print("❌ Exception dans la boucle principale:", e)
