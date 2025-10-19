@@ -345,7 +345,7 @@ try:
                 gl_mode="off"
                 relais.value(0)
                 gl_cde_regul=False
-                gl_defaut|=0x01
+                #gl_defaut|=0x01
                 safe_print(f"Fin: {gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
             else:
                 if temp <= (temp_cible-0.5):
@@ -375,6 +375,7 @@ try:
             gl_dem_chauffage_old=dem_chauffage
             
             if(gl_presence==True)and(gl_defaut==0):
+                ################ PRE CHAUFFAGE ####################
                 if (gl_ordre_pre_chauff==True) and (gl_current_hour >= 20) and (gl_temp_pre_chauff<=19):
                     if (gl_mode!="pre_chauff"):
                         temp_cible=gl_temp_pre_chauff
@@ -389,6 +390,9 @@ try:
                     elif gl_duree!=gl_ma_duree:
                         max_timer_regul_seconds=min(2*3600, (1+gl_duree )*3600)  # duree max de 2h
                         gl_ma_duree = gl_duree
+                    elif (temp_cible!=gl_temp_pre_chauff):
+                        temp_cible=gl_temp_pre_chauff                        
+                ################ CHAUFFAGE ####################                        
                 elif (gl_ordre_chauff==True) and (gl_temp_chauff<=20) : 
                     if( (gl_mode_debug==True) or (gl_current_hour >= 19) or (gl_current_hour <=3) ):# debug
                         if (gl_mode!="chauff") :
@@ -404,15 +408,14 @@ try:
                         elif gl_duree!=gl_ma_duree:
                             max_timer_regul_seconds=min(60*30, (1+gl_duree)*60*15)  # duree max de 30min
                             gl_ma_duree = gl_duree  
+                        elif (temp_cible!=gl_temp_chauff):
+                            temp_cible=gl_temp_chauff
+                ################ PASSAGE OFF ####################                                                     
                 elif (gl_ordre_pre_chauff==False) and (gl_ordre_chauff==False) and (gl_mode!="off") :
                     gl_mode="off"
                     relais.value(0)
                     gl_cde_regul=False
                     safe_print(f"{gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()} ")
-                elif (gl_mode=="pre_chauff") and (temp_cible!=gl_temp_pre_chauff):
-                    temp_cible=gl_temp_pre_chauff
-                elif (gl_mode=="chauff") and (temp_cible!=gl_temp_chauff):
-                    temp_cible=gl_temp_chauff
             elif(gl_mode!="off"):
                 gl_mode="off"
                 relais.value(0)
