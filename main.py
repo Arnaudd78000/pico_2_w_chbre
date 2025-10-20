@@ -378,6 +378,8 @@ try:
             elapsed_time_regul_seconds = (time.ticks_ms() - start_regul_ticks) // 1000
             if (elapsed_time_regul_seconds > max_timer_regul_seconds):
                 gl_mode="off"
+                gl_ordre_chauff=False
+                gl_ordre_pre_chauff=False
                 relais.value(0)
                 gl_cde_regul=False
                 #gl_defaut|=0x01
