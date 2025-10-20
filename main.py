@@ -15,12 +15,14 @@ import select
 
 # ### Constante ###
 DEBUG = False
-VERSION = "1.2"
+VERSION = "1.3"
 
 # UUIDs BLE UART
 SERVICE_UUID = bluetooth.UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
 RX_UUID = bluetooth.UUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
 TX_UUID = bluetooth.UUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
+RX2_UUID = bluetooth.UUID("6E400004-B5A3-F393-E0A9-E50E24DCCA9E")  # nouvel UUID pour trame refresh
+
 
 global gl_mode, gl_mode_old, gl_cde_regul, gl_reception_trame, gl_temp_pre_chauff, gl_temp_chauff, gl_ordre_pre_chauff, gl_ordre_chauff, gl_presence, gl_mode_debug, gl_current_hour, gl_current_minute, gl_defaut, gl_dem_chauffage_old, gl_duree, gl_ma_duree
 gl_duree=0
@@ -96,7 +98,7 @@ def to_bool(val):
 
         
 #############################################################
-# ### Fonction pour analyser et affecter les valeurs des paramètres HTTP ###
+# ### Decode msg bluetooth from raspy SdB                 ###
 #############################################################
 def decode_rx_msg(message):
     global gl_reception_trame, gl_temp_pre_chauff, gl_temp_chauff, gl_mode_debug, gl_ordre_pre_chauff, gl_ordre_chauff, gl_presence, gl_current_hour, gl_current_minute, gl_duree
@@ -105,7 +107,7 @@ def decode_rx_msg(message):
         # Décomposer la string pour obtenir les valeurs
         valeurs = message.split(',')
         if len(valeurs) != 9:
-            safe_print("⚠️ Message mal formé:", message)
+            safe_print("⚠️ Message rx1 mal formé:", message)
             return
         # Assigner les valeurs aux variables
         gl_presence = to_bool(valeurs[0])
@@ -118,10 +120,33 @@ def decode_rx_msg(message):
         gl_current_hour = int(valeurs[7])
         gl_current_minute = int(valeurs[8])
 
-        safe_print(" Message hhh:", message)
+        safe_print(" Message rx :", message)
         gl_reception_trame=True
     except Exception as e:
         safe_print("⚠️ Erreur dans decode_rx_msg:", e)
+
+def decode_rx2_msg(message):
+    global gl_reception_trame, gl_presence, gl_current_hour, gl_current_minute, gl_mode
+
+    try:
+        # Décomposer la string pour obtenir les valeurs
+        valeurs = message.split(',')
+        if len(valeurs) != 4:
+            safe_print("⚠️ Message rx2 mal formé:", message)
+            return
+        # Assigner les valeurs aux variables
+        gl_presence = to_bool(valeurs[0])
+        mode = to_bool(valeurs[1])
+        if ((mode==False) and (gl_mode!="off")) or (gl_presence==False):
+            gl_mode="off"
+            relais.value(0) 
+        gl_current_hour = int(valeurs[2])
+        gl_current_minute = int(valeurs[3])
+
+        safe_print(" Message refresh:", message)
+        gl_reception_trame=True
+    except Exception as e:
+        safe_print("⚠️ Erreur dans decode_rx2_msg:", e)
 
 #############################################################
 # ### BLE Serveur ###
@@ -139,9 +164,10 @@ class BLEServer:
 
         self.tx = (TX_UUID, bluetooth.FLAG_NOTIFY)
         self.rx = (RX_UUID, bluetooth.FLAG_WRITE)
+        self.rx2 = (RX2_UUID, bluetooth.FLAG_WRITE)  # deuxième RX
 
-        self.service = (SERVICE_UUID, (self.tx, self.rx))
-        ((self.tx_handle, self.rx_handle),) = self.ble.gatts_register_services((self.service,))
+        self.service = (SERVICE_UUID, (self.tx, self.rx, self.rx2))
+        ((self.tx_handle, self.rx_handle, self.rx2_handle),) = self.ble.gatts_register_services((self.service,))
 
         self.advertise(name)
 
@@ -189,9 +215,10 @@ class BLEServer:
 
         elif event == 3:  # _IRQ RECEPTION (IRQ_GATTS_WRITE)          
             conn, attr = data
+
             if attr == self.rx_handle:
                 msg_recu = self.ble.gatts_read(self.rx_handle).decode().strip()
-                safe_print("📥 Message recu:", msg_recu)
+                safe_print("📥 Message RX recu:", msg_recu)
 
                 led_verte.value(1)
                 # Analyser et mettre à jour les paramètres via la requete HTTP
@@ -199,6 +226,14 @@ class BLEServer:
 
                 self.last_msg_time = time.time()  # Mise à jour du timer
 
+            elif attr == self.rx2_handle:
+                msg = self.ble.gatts_read(self.rx2_handle).decode().strip()
+                safe_print("📥 Message RX 2 reçu:", msg)
+                decode_rx2_msg(msg)  # fonction distincte pour RX2 si tu veux
+
+                self.last_msg_time = time.time()  # Mise à jour du timer                
+
+                
     def send(self, msg):
         if self.connected:
             try:
