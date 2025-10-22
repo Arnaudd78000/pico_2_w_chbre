@@ -457,7 +457,7 @@ try:
                     elif (temp_cible!=gl_temp_chauff):
                         temp_cible=gl_temp_chauff
                   else:
-                    gl_defaut|=0x02
+                    gl_defaut|=0x20
                 ################ CHAUFFAGE ####################                        
                 elif (gl_ordre_boost==True):
                   if( (gl_temp_chauff<=20) and ( (gl_mode_debug==True) or (gl_current_hour >= 19) or (gl_current_hour <=3) )):
@@ -477,7 +477,7 @@ try:
                         elif (temp_cible!=gl_temp_chauff):
                             temp_cible=gl_temp_chauff
                   else:
-                    gl_defaut|=0x02                            
+                    gl_defaut|=0x20                            
                 ################ PASSAGE OFF ####################                                                     
                 elif (gl_ordre_on==False) and (gl_ordre_boost==False) and (gl_mode!="off") :
                     gl_mode="off"
