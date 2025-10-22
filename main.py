@@ -15,16 +15,26 @@ import select
 
 # ### Constante ###
 DEBUG = False
-VERSION = "1.3"
+VERSION = "1.5"
+
+# defaut  :
+    # bit 1: elapsed time regul
+    # bit 2: erreur decodage rx msg
+    # bit 3: timeout réception -> reset
+    # bit 4: defaut capteur temp
+    # bit 5: passage en mode presence off pdt regul
+    # bit 6: refus ordre (mauvaise heure ou temp_cible)
+    # bit 7:  
+    # bit 8:     
 
 # UUIDs BLE UART
 SERVICE_UUID = bluetooth.UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
 RX_UUID = bluetooth.UUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
 TX_UUID = bluetooth.UUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
 RX2_UUID = bluetooth.UUID("6E400004-B5A3-F393-E0A9-E50E24DCCA9E")  # nouvel UUID pour trame refresh
+TX_DEFAUT_UUID = bluetooth.UUID("6E400005-B5A3-F393-E0A9-E50E24DCCA9E")
 
-
-global gl_mode, gl_mode_old, gl_cde_regul, gl_reception_trame, gl_temp_pre_chauff, gl_temp_chauff, gl_ordre_pre_chauff, gl_ordre_chauff, gl_presence, gl_mode_debug, gl_current_hour, gl_current_minute, gl_defaut, gl_dem_chauffage_old, gl_duree, gl_ma_duree
+global gl_mode, gl_mode_old, gl_cde_regul, gl_reception_trame, gl_temp_chauff, gl_ordre_on, gl_ordre_boost, gl_presence, gl_mode_debug, gl_current_hour, gl_current_minute, gl_defaut, gl_dem_chauffage_old, gl_duree, gl_ma_duree
 gl_duree=0
 gl_ma_duree=0
 
@@ -73,16 +83,6 @@ def send_to_SdB(temp, temp_cible, relais_state, mode, elapsed_time_regul_seconds
     # Donnees à envoyer
     #cde_regul_court=0 if cde_regul==False else 1
     data = f"{temp:.1f},{temp_cible:.1f},{modetx},{duree},{int(elapsed_time_regul_seconds/60)}"
-    # defaut en valeur int (et non hex) :
-    # il faut passer par un mode off->pre_chauff ou chauff pour effacer gl_defaut
-        # bit 0: elapsed time regul
-        # bit 1: timeout rx
-        # bit 2:
-        # bit 3:
-        # bit 4:
-        # bit 5:
-        # bit 6:
-        # bit 7:    
             
     safe_print("📥 Message transmis:", data)
     ble_server.send(data)
@@ -101,38 +101,41 @@ def to_bool(val):
 # ### Decode msg bluetooth from raspy SdB                 ###
 #############################################################
 def decode_rx_msg(message):
-    global gl_reception_trame, gl_temp_pre_chauff, gl_temp_chauff, gl_mode_debug, gl_ordre_pre_chauff, gl_ordre_chauff, gl_presence, gl_current_hour, gl_current_minute, gl_duree
+    global gl_reception_trame, gl_temp_chauff, gl_mode_debug, gl_ordre_on, gl_ordre_boost, gl_presence, gl_current_hour, gl_current_minute, gl_duree, gl_defaut
 
     try:
         # Décomposer la string pour obtenir les valeurs
         valeurs = message.split(',')
-        if len(valeurs) != 9:
+        if len(valeurs) != 8:
             safe_print("⚠️ Message rx1 mal formé:", message)
+            gl_defaut|=0x02
             return
         # Assigner les valeurs aux variables
         gl_presence = to_bool(valeurs[0])
-        gl_temp_pre_chauff = float(16.0+int(valeurs[1])/2)
-        gl_temp_chauff = float(16.0+int(valeurs[2])/2)
-        gl_mode_debug = to_bool(valeurs[3])
-        gl_ordre_pre_chauff = to_bool(valeurs[4])
-        gl_ordre_chauff = to_bool(valeurs[5])
-        gl_duree = int(valeurs[6])        
-        gl_current_hour = int(valeurs[7])
-        gl_current_minute = int(valeurs[8])
+        gl_mode_debug = to_bool(valeurs[2])
+        gl_ordre_on = to_bool(valeurs[3])
+        gl_ordre_boost = to_bool(valeurs[4])
+        if gl_ordre_on or gl_ordre_boost:
+            gl_temp_chauff = float(int(valeurs[1]))/10
+            gl_duree = int(valeurs[5])        
+        gl_current_hour = int(valeurs[6])
+        gl_current_minute = int(valeurs[7])
 
         safe_print(" Message rx :", message)
         gl_reception_trame=True
     except Exception as e:
         safe_print("⚠️ Erreur dans decode_rx_msg:", e)
+        gl_defaut|=0x02
 
 def decode_rx2_msg(message):
-    global gl_reception_trame, gl_presence, gl_current_hour, gl_current_minute, gl_mode
+    global gl_reception_trame, gl_presence, gl_current_hour, gl_current_minute, gl_mode, gl_defaut
 
     try:
         # Décomposer la string pour obtenir les valeurs
         valeurs = message.split(',')
         if len(valeurs) != 4:
             safe_print("⚠️ Message rx2 mal formé:", message)
+            gl_defaut|=0x02
             return
         # Assigner les valeurs aux variables
         gl_presence = to_bool(valeurs[0])
@@ -147,6 +150,7 @@ def decode_rx2_msg(message):
         gl_reception_trame=True
     except Exception as e:
         safe_print("⚠️ Erreur dans decode_rx2_msg:", e)
+        gl_defaut|=0x02
 
 #############################################################
 # ### BLE Serveur ###
@@ -163,11 +167,12 @@ class BLEServer:
         self.connected = False
 
         self.tx = (TX_UUID, bluetooth.FLAG_NOTIFY)
+        self.tx_defaut = (TX_DEFAUT_UUID, bluetooth.FLAG_NOTIFY)        
         self.rx = (RX_UUID, bluetooth.FLAG_WRITE)
         self.rx2 = (RX2_UUID, bluetooth.FLAG_WRITE)  # deuxième RX
 
-        self.service = (SERVICE_UUID, (self.tx, self.rx, self.rx2))
-        ((self.tx_handle, self.rx_handle, self.rx2_handle),) = self.ble.gatts_register_services((self.service,))
+        self.service = (SERVICE_UUID, (self.tx, self.tx_defaut, self.rx, self.rx2))
+        ((self.tx_handle, self.tx_defaut_handle, self.rx_handle, self.rx2_handle),) = self.ble.gatts_register_services((self.service,))
 
         self.advertise(name)
 
@@ -243,7 +248,20 @@ class BLEServer:
                 self.connected = False
                 self.conn_handle = None
                 self.advertise()
-
+                
+    def send_defaut(self):
+        global gl_defaut  
+        if self.connected:
+            try:
+                data = f"0x{gl_defaut:02X}"   # Affiche toujours 2 chiffres (ex : 0x03, 0xAF)
+                safe_print("📥 Message transmis:", data)
+                self.ble.gatts_notify(self.conn_handle, self.tx_defaut_handle, data)
+            except Exception as e:
+                safe_print("⚠️ Erreur BLE notify:", e)
+                self.connected = False
+                self.conn_handle = None
+                self.advertise()
+                
     def advertise(self, name="PicoBLE"):
         global gl_mode, gl_cde_regul
         
@@ -267,6 +285,9 @@ class BLEServer:
 
             if elapsed > timeout_reset:
                 safe_print("⏱️ Aucun message depuis {} secondes. Redémarrage du système...".format(timeout_reset))
+                gl_defaut|=0x04
+                ble_server.send_defaut()
+                time.sleep(1)
                 machine.reset()
 
             elif elapsed > timeout_disconnect:
@@ -278,7 +299,6 @@ class BLEServer:
                 self.connected = False
                 self.conn_handle = None
                 self.advertise()
-                #gl_defaut|=0x02
 
 ####################################################################################################
 
@@ -291,12 +311,11 @@ pin = Pin("LED", Pin.OUT)
 # ### Init Variables ###
 gl_mode="off" 
 gl_mode_old=gl_mode
-gl_temp_pre_chauff=18
 gl_temp_chauff=19
 temp_cible=18
 gl_presence=False
-gl_ordre_pre_chauff=False
-gl_ordre_chauff=False
+gl_ordre_on=False
+gl_ordre_boost=False
 gl_cde_regul=False
 start_regul_ticks = 0
 gl_mode_debug=False
@@ -328,6 +347,7 @@ last_temp_time = time.ticks_ms()
 # ### Boucle principale ###
 #############################################################
 try:
+    erreur_capteur=False
     while True:
         ble_server.check_timeout(timeout_disconnect=1440, timeout_reset=14400)  # 24 min / 4 hours # timer en secndes. pas de réception trame depuis plus de > xx minutes
         #time.sleep(10)
@@ -359,6 +379,7 @@ try:
         except Exception as e:
             safe_print("❌ Erreur lecture capteur:", e)
             mesure = 50
+            erreur_capteur=True 
         last_temp_time = now
 
         # Mise à jour de l'historique des températures
@@ -366,6 +387,9 @@ try:
             temperature_history.append(mesure)
             if len(temperature_history) > 10:
                 temperature_history.pop(0)  # Garder uniquement les x dernières valeurs
+                if erreur_capteur:
+                  gl_defaut|=0x08
+                  erreur_capteur=False
 
 
 
@@ -378,11 +402,11 @@ try:
             elapsed_time_regul_seconds = (time.ticks_ms() - start_regul_ticks) // 1000
             if (elapsed_time_regul_seconds > max_timer_regul_seconds):
                 gl_mode="off"
-                gl_ordre_chauff=False
-                gl_ordre_pre_chauff=False
+                gl_ordre_boost=False
+                gl_ordre_on=False
                 relais.value(0)
                 gl_cde_regul=False
-                #gl_defaut|=0x01
+
                 safe_print(f"Fin: {gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
             else:
                 if temp <= (temp_cible-0.5):
@@ -404,34 +428,39 @@ try:
             tx_trame=True
             led_verte.value(0)
             # safe_print(f"gl_presence:{gl_presence}")
-            # safe_print(f"gl_ordre_chauff:{gl_ordre_chauff}")
+            # safe_print(f"gl_ordre_boost:{gl_ordre_boost}")
             
-            dem_chauffage=(gl_ordre_pre_chauff or gl_ordre_chauff)
-            if (dem_chauffage) and (gl_dem_chauffage_old==False):
-                gl_defaut=0
+            dem_chauffage=(gl_ordre_on or gl_ordre_boost)
             gl_dem_chauffage_old=dem_chauffage
+            if (gl_defaut!=0) :
+                ble_server.send_defaut()
+                gl_defaut=0
+                
             
-            if(gl_presence==True)and(gl_defaut==0):
+            if(gl_presence==True):
                 ################ PRE CHAUFFAGE ####################
-                if (gl_ordre_pre_chauff==True) and (gl_current_hour >= 20) and (gl_temp_pre_chauff<=19):
+                if (gl_ordre_on==True):
+                  if (gl_current_hour >= 19) and (gl_temp_chauff<=19):
                     if (gl_mode!="pre_chauff"):
-                        temp_cible=gl_temp_pre_chauff
+                        temp_cible=gl_temp_chauff
                         gl_mode="pre_chauff"
                         gl_cde_regul=True
                         start_regul_ticks = time.ticks_ms()
                         max_timer_regul_seconds=min(2*3600, (1+gl_duree)*3600)  # duree max de 2h
                         gl_ma_duree = gl_duree
-                        if(temp<(gl_temp_pre_chauff+0.5)):
+                        if(temp<(gl_temp_chauff+0.5)):
                             relais.value(1)
                         safe_print(f"{gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
                     elif gl_duree!=gl_ma_duree:
                         max_timer_regul_seconds=min(2*3600, (1+gl_duree )*3600)  # duree max de 2h
                         gl_ma_duree = gl_duree
-                    elif (temp_cible!=gl_temp_pre_chauff):
-                        temp_cible=gl_temp_pre_chauff                        
+                    elif (temp_cible!=gl_temp_chauff):
+                        temp_cible=gl_temp_chauff
+                  else:
+                    gl_defaut|=0x02
                 ################ CHAUFFAGE ####################                        
-                elif (gl_ordre_chauff==True) and (gl_temp_chauff<=20) : 
-                    if( (gl_mode_debug==True) or (gl_current_hour >= 19) or (gl_current_hour <=3) ):# debug
+                elif (gl_ordre_boost==True):
+                  if( (gl_temp_chauff<=20) and ( (gl_mode_debug==True) or (gl_current_hour >= 19) or (gl_current_hour <=3) )):
                         if (gl_mode!="chauff") :
                             temp_cible=gl_temp_chauff
                             gl_mode="chauff"
@@ -447,8 +476,10 @@ try:
                             gl_ma_duree = gl_duree  
                         elif (temp_cible!=gl_temp_chauff):
                             temp_cible=gl_temp_chauff
+                  else:
+                    gl_defaut|=0x02                            
                 ################ PASSAGE OFF ####################                                                     
-                elif (gl_ordre_pre_chauff==False) and (gl_ordre_chauff==False) and (gl_mode!="off") :
+                elif (gl_ordre_on==False) and (gl_ordre_boost==False) and (gl_mode!="off") :
                     gl_mode="off"
                     relais.value(0)
                     gl_cde_regul=False
@@ -456,6 +487,7 @@ try:
             elif(gl_mode!="off"):
                 gl_mode="off"
                 relais.value(0)
+                gl_defaut|=0x10                
                 gl_cde_regul=False
                 safe_print(f"Passage mode off (pres off ou gl_defaut) : {gl_mode} {gl_defaut} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
 
@@ -463,11 +495,6 @@ try:
         # ### Emission trame ###
         #########################
         if tx_trame or gl_mode_old!=gl_mode:
-            # if gl_reception_trame:
-            #     led_verte.value(1)
-            #     # Analyser et mettre à jour les paramètres via la requete HTTP
-            #     decode_rx_msg(msg_recu)
-            #     led_verte.value(0)
             if gl_mode_old!=gl_mode:
                 gl_mode_old = gl_mode
             send_to_SdB(temp, temp_cible, relais.value(), gl_mode, elapsed_time_regul_seconds, gl_ma_duree, dem_chauffage)
@@ -475,12 +502,3 @@ try:
 except Exception as e:
     safe_print("❌ Exception dans la boucle principale:", e)
    #machine.reset()  # Redémarre le Pico automatiquement
-
-
-
-
-
-
-
-
- 
