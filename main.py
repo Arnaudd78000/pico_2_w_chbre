@@ -15,7 +15,7 @@ import select
 
 # ### Constante ###
 DEBUG = False
-VERSION = "1.5"
+VERSION = "1.6"
 
 # defaut  :
     # bit 1: elapsed time regul
@@ -34,9 +34,10 @@ TX_UUID = bluetooth.UUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
 RX2_UUID = bluetooth.UUID("6E400004-B5A3-F393-E0A9-E50E24DCCA9E")  # nouvel UUID pour trame refresh
 TX_DEFAUT_UUID = bluetooth.UUID("6E400005-B5A3-F393-E0A9-E50E24DCCA9E")
 
-global gl_mode, gl_mode_old, gl_cde_regul, gl_reception_trame, gl_temp_chauff, gl_ordre_on, gl_ordre_boost, gl_presence, gl_mode_debug, gl_current_hour, gl_current_minute, gl_defaut, gl_dem_chauffage_old, gl_duree, gl_ma_duree
+global gl_etat_relais_old, gl_mode, gl_mode_old, gl_cde_regul, gl_reception_trame, gl_temp_chauff, gl_ordre_on, gl_ordre_boost, gl_presence, gl_mode_debug, gl_current_hour, gl_current_minute, gl_defaut, gl_dem_chauffage_old, gl_duree, gl_ma_duree
 gl_duree=0
 gl_ma_duree=0
+gl_etat_relais_old=0
 
 # Initialisation de la liste des températures
 temperature_history = [20] # init une donnée
@@ -76,14 +77,19 @@ def send_to_SdB(temp, temp_cible, relais_state, mode, elapsed_time_regul_seconds
         else:
             modetx="off_0"              
     else:
+        if mode=="pre_chauff":
+            mode="prech"
+        elif mode=="chauff":
+            mode="chauf"
+
         if relais_state==1:
-            modetx=mode+"_1"
+            modetx=mode+"_1" 
         else:
             modetx=mode+"_0" 
+
     # Donnees à envoyer
-    #cde_regul_court=0 if cde_regul==False else 1
-    data = f"{temp:.1f},{temp_cible:.1f},{modetx},{duree},{int(elapsed_time_regul_seconds/60)}"
-            
+    data = f"{temp:.1f},{temp_cible:.1f},{modetx},{duree},{int(elapsed_time_regul_seconds/60)},{relais_state}"
+         
     safe_print("📥 Message transmis:", data)
     ble_server.send(data)
     
@@ -388,7 +394,7 @@ try:
             if len(temperature_history) > 10:
                 temperature_history.pop(0)  # Garder uniquement les x dernières valeurs
                 if erreur_capteur:
-                  gl_defaut|=0x08
+                #   gl_defaut|=0x08
                   erreur_capteur=False
 
 
@@ -409,10 +415,10 @@ try:
 
                 safe_print(f"Fin: {gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
             else:
-                if temp <= (temp_cible-0.5):
+                if (temp <= (temp_cible-0.5)) and (relais.value()==0):
                     relais.value(1)
                     time.sleep_ms(1000)
-                elif temp >= (temp_cible+0.5):
+                elif (temp >= (temp_cible+0.5)) and (relais.value()==1):
                     relais.value(0)
         else:
             relais.value(0)
@@ -494,10 +500,12 @@ try:
         #########################        
         # ### Emission trame ###
         #########################
-        if tx_trame or gl_mode_old!=gl_mode:
+        etat_relais = relais.value()
+        if tx_trame or (gl_mode_old!=gl_mode) or (etat_relais!=gl_etat_relais_old):
             if gl_mode_old!=gl_mode:
                 gl_mode_old = gl_mode
-            send_to_SdB(temp, temp_cible, relais.value(), gl_mode, elapsed_time_regul_seconds, gl_ma_duree, dem_chauffage)
+            gl_etat_relais_old = etat_relais
+            send_to_SdB(temp, temp_cible, etat_relais, gl_mode, elapsed_time_regul_seconds, gl_ma_duree, dem_chauffage)
 
 except Exception as e:
     safe_print("❌ Exception dans la boucle principale:", e)
