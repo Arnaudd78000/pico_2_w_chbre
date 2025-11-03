@@ -348,7 +348,10 @@ ble_server = BLEServer()
 safe_print(bluetooth.__name__)
 led_verte.value(0)
 
-last_temp_time = time.ticks_ms()
+last_temp_time = 0
+# lance une première conversion de température
+ds_sensor.convert_temp()
+
 #############################################################
 # ### Boucle principale ###
 #############################################################
@@ -378,28 +381,28 @@ try:
 
         now = time.ticks_ms()
         
-        #if time.ticks_diff(now, last_temp_time) > 1250:
-        try:
-            ds_sensor.convert_temp()
-            mesure = round(ds_sensor.read_temp(roms[0]), 1) if roms else 50
-        except Exception as e:
-            safe_print("❌ Erreur lecture capteur:", e)
-            mesure = 50
-            erreur_capteur=True 
-        last_temp_time = now
+        # espace les mesures de temperature et evite de bloquer la boucle principale sur temps d'attente lecteur capteur (1250ms)
+        if time.ticks_diff(now, last_temp_time) > 5000:  # toutes les 5 secondes
+            try:
+                mesure = round(ds_sensor.read_temp(roms[0]), 1) if roms else 50    # lecture de la température issue d'une conversion lancée précédemment   
+            except Exception as e:
+                safe_print("❌ Erreur lecture capteur:", e)
+                mesure = 50
+                erreur_capteur=True 
+            
+            last_temp_time = now
+            ds_sensor.convert_temp()   # lance la conversion pour la prochaine lecture             
 
-        # Mise à jour de l'historique des températures
-        if (mesure>11) or (mesure<35):
-            temperature_history.append(mesure)
-            if len(temperature_history) > 10:
-                temperature_history.pop(0)  # Garder uniquement les x dernières valeurs
+            # Mise à jour de l'historique des températures
+            if 11 < mesure < 35:
+                temperature_history.append(mesure)
+                if len(temperature_history) > 10:
+                    temperature_history.pop(0)  # Garder uniquement les x dernières valeurs
                 if erreur_capteur:
-                #   gl_defaut|=0x08
-                  erreur_capteur=False
+                    #   gl_defaut|=0x08
+                    erreur_capteur=False
 
-
-
-        temp = mean(temperature_history)
+            temp = mean(temperature_history)
 
         #########################        
         # ### Regulation ###
