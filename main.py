@@ -12,10 +12,11 @@ import onewire, ds18x20
 import ntptime
 import urequests
 import select
+import gc
 
 # ### Constante ###
 DEBUG = False
-VERSION = "1.6"
+VERSION = "1.7"
 
 # defaut  :
     # bit 1: elapsed time regul
@@ -249,6 +250,7 @@ class BLEServer:
         if self.connected:
             try:
                 self.ble.gatts_notify(self.conn_handle, self.tx_handle, msg)
+                time.sleep_ms(10)  # Laisse respirer la pile BLE
             except Exception as e:
                 safe_print("⚠️ Erreur BLE notify:", e)
                 self.connected = False
@@ -426,7 +428,13 @@ try:
         else:
             relais.value(0)
             elapsed_time_regul_seconds=0
-        
+
+
+        ###########################        
+        # ### Nettoyage mémoire ###
+        ###########################
+        if time.ticks_ms() % 60000 < 50:    # toutes les 60 secondes environ
+            gc.collect()    
 
         ###########################        
         # ### chgmnt de mode ? ###
