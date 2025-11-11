@@ -16,7 +16,7 @@ import gc
 
 # ### Constante ###
 DEBUG = False
-VERSION = "1.7"
+VERSION = "2.0"
 
 # defaut  :
     # bit 1: elapsed time regul
@@ -50,7 +50,7 @@ def mean(values):
 #############################################################
 # ### /!\ !!! /!\ !!!/!\ !!!/!\ !!!/!\ !!!/!\ !!!/!\ !!!/!\ !!!
 # ### /!\ !!! lorsque l'on connecte la sonde usb,
-# ### /!\ !!! ca finaera par crasher après la déconnexion
+# ### /!\ !!! ca finira par crasher après la déconnexion
 # ### /!\ !!! /!\ !!!/!\ !!!/!\ !!!/!\ !!!/!\ !!!/!\ !!!/!\ !!!
 ############h#################################################
 def safe_print(*args, **kwargs):
@@ -62,8 +62,20 @@ def safe_print(*args, **kwargs):
 global modetx
 modetx="dummy"
 #############################################################
+
+
 # ### Fonction pour envoyer les donnees à SdB ###
 ############h#################################################
+
+def send_defaut_to_SdB():
+    data = f"0x{gl_defaut:02X}"
+    safe_print("msg defaut: ", data)    
+
+    ok = ble_server.send_defaut()
+    if not ok:
+        safe_print("⚠️ Échec d’envoi BLE defaut (déjà relancé par send_defaut)")
+
+
 def send_to_SdB(temp, temp_cible, relais_state, mode, elapsed_time_regul_seconds, duree, dem_chauffage):
     global modetx
 
@@ -92,7 +104,10 @@ def send_to_SdB(temp, temp_cible, relais_state, mode, elapsed_time_regul_seconds
     data = f"{temp:.1f},{temp_cible:.1f},{modetx},{duree},{int(elapsed_time_regul_seconds/60)},{relais_state}"
          
     safe_print("📥 Message transmis:", data)
-    ble_server.send(data)
+    ok = ble_server.send(data)
+    if not ok:
+        safe_print("⚠️ Échec d’envoi BLE, tentative de reconnexion...")
+
     
 def to_bool(val):
     if isinstance(val, bool):
@@ -130,6 +145,8 @@ def decode_rx_msg(message):
 
         safe_print(" Message rx :", message)
         gl_reception_trame=True
+        print(f"[DBG RX MSG] gl_reception_trame:{gl_reception_trame}")
+
     except Exception as e:
         safe_print("⚠️ Erreur dans decode_rx_msg:", e)
         gl_defaut|=0x02
@@ -155,6 +172,8 @@ def decode_rx2_msg(message):
 
         safe_print(" Message refresh:", message)
         gl_reception_trame=True
+        print(f"[DBG RX2 MSG] gl_reception_trame:{gl_reception_trame}")
+
     except Exception as e:
         safe_print("⚠️ Erreur dans decode_rx2_msg:", e)
         gl_defaut|=0x02
@@ -164,6 +183,8 @@ def decode_rx2_msg(message):
 #############################################################  
 class BLEServer:
     def __init__(self, name="PicoBLE"):
+        self.rx_queue = []    # pour messages reçus sur RX
+        self.rx2_queue = []   # pour messages reçus sur RX2        
         self.ble = bluetooth.BLE()
         self.ble.active(True)
         self.ble.irq(self.on_event)
@@ -183,33 +204,12 @@ class BLEServer:
 
         self.advertise(name)
 
-    # def on_event(self, event, data):
-    #     if event == 1:  # _IRQ_CENTRAL_CONNECT
-    #         self.conn_handle, _, _ = data
-    #         self.connected = True
-    #         self.last_msg_time = time.time()  # Reset du timer
-    #         safe_print("✅ Connecte")
-
-    #     elif event == 2:  # _IRQ_CENTRAL_DISCONNECT
-    #         safe_print("❌ Deconnecte")
-    #         self.connected = False
-    #         self.conn_handle = None
-    #         self.advertise()
     def on_event(self, event, data):
         if event == 1:  # _IRQ_CENTRAL_CONNECT
             self.conn_handle, _, _ = data
             self.connected = True
             self.last_msg_time = time.time()  # Reset du timer
-            safe_print("✅ Connecte")
-
-        # elif event == 2:  # _IRQ_CENTRAL_DISCONNECT
-        #     conn_handle, reason, mem_view = data
-        #     safe_print(f"❌ Déconnecté - raison: conn_handle={conn_handle}, reason={reason}, memoryview={mem_view.tobytes()}")
-        #     self.connected = False
-        #     self.conn_handle = None
-        #     self.ble.gap_advertise(None)  # Désactive l'advertising
-        #     time.sleep(1)  # Délai avant de relancer la publicité
-        #     self.advertise()          
+            safe_print("✅ Connecte")     
 
         elif event == 2:  # _IRQ_CENTRAL_DISCONNECT
             conn_handle, addr_type, addr = data
@@ -223,52 +223,83 @@ class BLEServer:
            # time.sleep(1)
            # self.ble.active(True)
             self.advertise()
-
-
-        elif event == 3:  # _IRQ RECEPTION (IRQ_GATTS_WRITE)          
+              
+        elif event == 3:  # _IRQ RECEPTION (IRQ_GATTS_WRITE)
             conn, attr = data
 
             if attr == self.rx_handle:
-                msg_recu = self.ble.gatts_read(self.rx_handle).decode().strip()
-                safe_print("📥 Message RX recu:", msg_recu)
-
-                led_verte.value(1)
-                # Analyser et mettre à jour les paramètres via la requete HTTP
-                decode_rx_msg(msg_recu)
-
-                self.last_msg_time = time.time()  # Mise à jour du timer
+                part = self.ble.gatts_read(self.rx_handle)
+                if part:
+                    try:
+                        s = part.decode().strip()
+                    except Exception:
+                        s = part.decode('latin1', 'ignore').strip()
+                    # push dans la queue (callback court)
+                    self.rx_queue.append(s)
+                    self.last_msg_time = time.time()
 
             elif attr == self.rx2_handle:
-                msg = self.ble.gatts_read(self.rx2_handle).decode().strip()
-                safe_print("📥 Message RX 2 reçu:", msg)
-                decode_rx2_msg(msg)  # fonction distincte pour RX2 si tu veux
-
-                self.last_msg_time = time.time()  # Mise à jour du timer                
-
+                part = self.ble.gatts_read(self.rx2_handle)
+                if part:
+                    try:
+                        s = part.decode().strip()
+                    except Exception:
+                        s = part.decode('latin1', 'ignore').strip()
+                    self.rx2_queue.append(s)
+                    self.last_msg_time = time.time()
                 
     def send(self, msg):
-        if self.connected:
+        # Envoie une notification sur TX principal. Retourne True si ok, False sinon
+        if not self.connected or self.conn_handle is None:
+            return False
+        try:
+            # envoyer en bytes (sécurise le format)
+            if isinstance(msg, str):
+                payload = msg.encode()
+            else:
+                payload = msg
+            self.ble.gatts_notify(self.conn_handle, self.tx_handle, payload)
+            # temps de respiration; augmenter si instable
+            time.sleep_ms(60)
+            return True
+        except Exception as e:
+            safe_print("⚠️ Erreur BLE notify (send):", e)
+            # réinitialiser proprement et relancer advertise
             try:
-                self.ble.gatts_notify(self.conn_handle, self.tx_handle, msg)
-                time.sleep_ms(10)  # Laisse respirer la pile BLE
-            except Exception as e:
-                safe_print("⚠️ Erreur BLE notify:", e)
-                self.connected = False
-                self.conn_handle = None
-                self.advertise()
-                
+                self.ble.gap_disconnect(self.conn_handle)
+            except Exception:
+                pass
+            self.connected = False
+            self.conn_handle = None
+            # petit délai puis advertise
+            time.sleep_ms(100)
+            self.advertise()
+            return False
+
     def send_defaut(self):
-        global gl_defaut  
-        if self.connected:
+        # Envoie la trame défaut sur le handle dédié. Retourne True/False
+        global gl_defaut
+        if not self.connected or self.conn_handle is None:
+            return False
+        try:
+            data = f"0x{gl_defaut:02X}"
+            # afficher ce qu'on veut transmettre
+            safe_print("📥 Message défaut transmis:", data)
+            self.ble.gatts_notify(self.conn_handle, self.tx_defaut_handle, data.encode())
+            time.sleep_ms(60)
+            return True
+        except Exception as e:
+            safe_print("⚠️ Erreur BLE notify (send_defaut):", e)
             try:
-                data = f"0x{gl_defaut:02X}"   # Affiche toujours 2 chiffres (ex : 0x03, 0xAF)
-                safe_print("📥 Message transmis:", data)
-                self.ble.gatts_notify(self.conn_handle, self.tx_defaut_handle, data)
-            except Exception as e:
-                safe_print("⚠️ Erreur BLE notify:", e)
-                self.connected = False
-                self.conn_handle = None
-                self.advertise()
+                self.ble.gap_disconnect(self.conn_handle)
+            except Exception:
+                pass
+            self.connected = False
+            self.conn_handle = None
+            time.sleep_ms(100)
+            self.advertise()
+            return False
+
                 
     def advertise(self, name="PicoBLE"):
         global gl_mode, gl_cde_regul
@@ -293,8 +324,6 @@ class BLEServer:
 
             if elapsed > timeout_reset:
                 safe_print("⏱️ Aucun message depuis {} secondes. Redémarrage du système...".format(timeout_reset))
-                gl_defaut|=0x04
-                ble_server.send_defaut()
                 time.sleep(1)
                 machine.reset()
 
@@ -354,32 +383,28 @@ last_temp_time = 0
 # lance une première conversion de température
 ds_sensor.convert_temp()
 
+last_gc = time.ticks_ms()
+last_mem_info = last_gc
 #############################################################
 # ### Boucle principale ###
 #############################################################
 try:
     erreur_capteur=False
     while True:
+
+        # Traiter RX (messages complets)
+        if ble_server.rx_queue:
+            msg_recu = ble_server.rx_queue.pop(0)   # pop FIFO
+            safe_print("📥 Traitement main loop RX:", msg_recu)
+            decode_rx_msg(msg_recu)                 # parse en contexte principal
+
+        if ble_server.rx2_queue:
+            msg2 = ble_server.rx2_queue.pop(0)
+            safe_print("📥 Traitement main loop RX2:", msg2)
+            decode_rx2_msg(msg2)
+
         ble_server.check_timeout(timeout_disconnect=1440, timeout_reset=14400)  # 24 min / 4 hours # timer en secndes. pas de réception trame depuis plus de > xx minutes
         #time.sleep(10)
-        
-        # # ### Lecture du capteur de temperature ###
-        # try:
-        #     ds_sensor.convert_temp()
-        #     time.sleep_ms(1250)
-        #     temp = round(ds_sensor.read_temp(roms[0]), 1) if roms else None
-        # except Exception as e:
-        #     safe_print("❌ Erreur lecture capteur de température :", e)
-        #     temp = 50 # pour forcer coupure relais
-
-        # ### Lecture du capteur de temperature ###
-        # try:
-        #     ds_sensor.convert_temp()
-        #     time.sleep_ms(1250)
-        #     mesure = round(ds_sensor.read_temp(roms[0]), 1) if roms else 50
-        # except Exception as e:
-        #     safe_print("❌ Erreur lecture capteur de température :", e)
-        #     mesure = 50 # pour forcer coupure relais
 
         now = time.ticks_ms()
         
@@ -404,6 +429,7 @@ try:
                     #   gl_defaut|=0x08
                     erreur_capteur=False
 
+            # debug : temp = now % 1000 #
             temp = mean(temperature_history)
 
         #########################        
@@ -420,10 +446,10 @@ try:
 
                 safe_print(f"Fin: {gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
             else:
-                if (temp <= (temp_cible-0.5)) and (relais.value()==0):
+                if (temp <= (temp_cible-0.3)) and (relais.value()==0):
                     relais.value(1)
                     time.sleep_ms(1000)
-                elif (temp >= (temp_cible+0.5)) and (relais.value()==1):
+                elif (temp >= (temp_cible+0.3)) and (relais.value()==1):
                     relais.value(0)
         else:
             relais.value(0)
@@ -433,8 +459,12 @@ try:
         ###########################        
         # ### Nettoyage mémoire ###
         ###########################
-        if time.ticks_ms() % 60000 < 50:    # toutes les 60 secondes environ
-            gc.collect()    
+        if time.ticks_diff(now, last_gc) > 60000:
+            gc.collect()
+            last_gc = now         
+        if time.ticks_diff(now, last_mem_info) > 300000:
+            safe_print("Mémoire libre:", gc.mem_free())
+            last_mem_info = now
 
         ###########################        
         # ### chgmnt de mode ? ###
@@ -442,15 +472,15 @@ try:
         tx_trame=False
         if gl_reception_trame:
             gl_reception_trame=False
+            # print("[DBG MAIN] gl_reception_trame détecté -> tx_trame=True")            
             tx_trame=True
             led_verte.value(0)
-            # safe_print(f"gl_presence:{gl_presence}")
-            # safe_print(f"gl_ordre_boost:{gl_ordre_boost}")
             
             dem_chauffage=(gl_ordre_on or gl_ordre_boost)
             gl_dem_chauffage_old=dem_chauffage
             if (gl_defaut!=0) :
-                ble_server.send_defaut()
+                send_defaut_to_SdB()
+                time.sleep(1)
                 gl_defaut=0
                 
             
@@ -465,7 +495,7 @@ try:
                         start_regul_ticks = time.ticks_ms()
                         max_timer_regul_seconds=min(2*3600, (1+gl_duree)*3600)  # duree max de 2h
                         gl_ma_duree = gl_duree
-                        if(temp<(gl_temp_chauff+0.5)):
+                        if(temp<(gl_temp_chauff+0.3)):
                             relais.value(1)
                         safe_print(f"{gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
                     elif gl_duree!=gl_ma_duree:
@@ -485,7 +515,7 @@ try:
                             start_regul_ticks = time.ticks_ms()
                             max_timer_regul_seconds=min(60*30, (1+gl_duree)*60*15)  # duree max de 30min
                             gl_ma_duree = gl_duree                        
-                            if(temp<(gl_temp_chauff+0.5)):
+                            if(temp<(gl_temp_chauff+0.3)):
                                 relais.value(1)
                             safe_print(f"{gl_mode} {temp} {temp_cible} {gl_current_hour}:{gl_current_minute} {relais.value()}")
                         elif gl_duree!=gl_ma_duree:
